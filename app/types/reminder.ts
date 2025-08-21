@@ -1,16 +1,19 @@
+export type RepeatMode = 'once' | 'today' | 'daily' | 'weekly'
+
 export interface Reminder {
-  id: string;
-  title: string;
-  dateTime: string; // Combined date and time
-  repeat: 'none' | 'daily' | 'weekly' | 'monthly';
-  completed: boolean;
-  createdAt: any; // Firestore timestamp
-  userId?: string;
+  id: string
+  title: string
+  time?: string // HH:mm (24h)
+  repeatMode: RepeatMode
+  completed: boolean
+  createdAt: Date
+  userId?: string
 }
 
 export interface ReminderFormData {
-  title: string;
-  date: string;
-  time: string;
-  repeat: 'none' | 'daily' | 'weekly' | 'monthly';
+  title: string
+  time?: string
+  repeatMode: RepeatMode
 }
+
+

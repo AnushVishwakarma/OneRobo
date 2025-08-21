@@ -1,17 +1,19 @@
-import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getFirestore } from 'firebase/firestore';
+import { initializeApp, getApps } from 'firebase/app'
+import { getFirestore } from 'firebase/firestore'
 
-// Your web app's Firebase configuration
-// IMPORTANT: Replace with your actual Firebase project credentials
+// Initialize with inline config (no env vars)
 const firebaseConfig = {
-  apiKey: "YOUR_API_KEY",
-  authDomain: "YOUR_AUTH_DOMAIN",
-  projectId: "YOUR_PROJECT_ID",
-  storageBucket: "YOUR_STORAGE_BUCKET",
-  messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
-  appId: "YOUR_APP_ID"
-};
+  apiKey: 'AIzaSyCnU9DiKNwanBihx2o5W6WO6W5DBYbNgMc',
+  authDomain: 'aiassistant-33e75.firebaseapp.com',
+  projectId: 'aiassistant-33e75',
+  storageBucket: 'aiassistant-33e75.appspot.com',
+  messagingSenderId: '25705522426',
+  appId: '1:25705522426:web:aaa500212541fee1275543',
+  measurementId: 'G-WBG1N9P4JJ',
+}
 
-// Initialize Firebase
-const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
-export const db = getFirestore(app);
+const app = getApps().length ? getApps()[0] : initializeApp(firebaseConfig)
+
+export const db = getFirestore(app)
+
+

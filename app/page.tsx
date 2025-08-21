@@ -1,6 +1,8 @@
 'use client'
 import { useEffect, useRef, useState } from 'react'
 import ColorDetectionGame from './components/ColorDetectionGame'
+import { createReminder, getDueRemindersForToday, toggleReminderComplete } from './services/reminders'
+import type { ReminderFormData } from './types/reminder'
 
 type ConversationMessage = { role: 'user' | 'assistant'; content: string }
 
@@ -170,94 +172,6 @@ function TicTacToe({ onClose, aiMode = false, onGameEnd }: { onClose: () => void
 			</div>
 		</div>
 	)
-}
-
-function HomeContent() {
-  const { texts } = useLanguage();
-  
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 relative overflow-hidden">
-      <LanguageSwitcher />
-      
-      <div className="absolute inset-0 overflow-hidden">
-        <div className="absolute -top-40 -right-40 w-80 h-80 bg-purple-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-blob"></div>
-        <div className="absolute -bottom-40 -left-40 w-80 h-80 bg-blue-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-blob animation-delay-2000"></div>
-        <div className="absolute top-40 left-40 w-80 h-80 bg-pink-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-blob animation-delay-4000"></div>
-      </div>
-
-      <div className="absolute inset-0">
-        {[...Array(20)].map((_, i) => (
-          <div
-            key={i}
-            className="absolute w-2 h-2 bg-white rounded-full opacity-20 animate-float"
-            style={{
-              left: `${Math.random() * 100}%`,
-              top: `${Math.random() * 100}%`,
-              animationDelay: `${Math.random() * 3}s`,
-              animationDuration: `${3 + Math.random() * 2}s`
-            }}
-          />
-        ))}
-      </div>
-
-      <div className="relative z-10 container mx-auto px-4 py-8">
-        <div className="text-center mb-16">
-          <div className="inline-block p-2 bg-gradient-to-r from-purple-500/20 to-blue-500/20 rounded-2xl backdrop-blur-xl border border-white/10 mb-8">
-            <h1 className="text-7xl font-black bg-gradient-to-r from-white via-purple-200 to-blue-200 bg-clip-text text-transparent mb-6 leading-tight">
-              {texts.title}
-            </h1>
-          </div>
-          <p className="text-xl text-gray-300 max-w-3xl mx-auto leading-relaxed">
-            {texts.subtitle}
-          </p>
-          
-          <div className="flex justify-center items-center gap-8 mt-12">
-            <div className="text-center">
-              <div className="text-3xl font-bold text-white mb-2">⚡</div>
-              <div className="text-sm text-gray-400">{texts.stats.lightning}</div>
-            </div>
-            <div className="w-px h-8 bg-gradient-to-b from-transparent via-gray-600 to-transparent"></div>
-            <div className="text-center">
-              <div className="text-3xl font-bold text-white mb-2">🎯</div>
-              <div className="text-sm text-gray-400">{texts.stats.smart}</div>
-            </div>
-            <div className="w-px h-8 bg-gradient-to-b from-transparent via-gray-600 to-transparent"></div>
-            <div className="text-center">
-              <div className="text-3xl font-bold text-white mb-2">✨</div>
-              <div className="text-sm text-gray-400">{texts.stats.premium}</div>
-            </div>
-          </div>
-        </div>
-
-        <div className="max-w-6xl mx-auto">
-          <div className="backdrop-blur-xl bg-white/5 rounded-3xl border border-white/10 shadow-2xl p-8 mb-8">
-            <ReminderForm />
-          </div>
-          
-          <div className="backdrop-blur-xl bg-white/5 rounded-3xl border border-white/10 shadow-2xl p-8">
-            <ReminderList />
-          </div>
-        </div>
-
-        <div className="text-center mt-20">
-          <div className="inline-flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-purple-500/20 to-blue-500/20 rounded-full backdrop-blur-xl border border-white/10">
-            <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
-            <span className="text-gray-300 text-sm">{texts.footer}</span>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-export default function Home() {
-  return (
-    <LanguageProvider>
-      <ErrorBoundary>
-        <HomeContent />
-      </ErrorBoundary>
-    </LanguageProvider>
-  );
 }
 
 function Trivia({ onClose }: { onClose: () => void }) {
@@ -1319,6 +1233,30 @@ export default function Home() {
 		return () => { if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current) }
 	}, [])
 
+	// Poll for due reminders every 30 seconds
+	useEffect(() => {
+		let timer: any
+		const checkReminders = async () => {
+			try {
+				const due = await getDueRemindersForToday()
+				if (due.length > 0) {
+					for (const r of due) {
+						const msg = craftReminderSpeech(r.title, r.time)
+						speakResponse(msg)
+						// Mark completed to avoid repeating
+						try { await toggleReminderComplete(r.id, true) } catch {}
+					}
+				}
+			} catch (e) {
+				// Ignore polling errors in UI
+			}
+		}
+		// Initial and interval
+		checkReminders()
+		timer = setInterval(checkReminders, 30000)
+		return () => { if (timer) clearInterval(timer) }
+	}, [])
+
 	// Speech synthesis monitor - cleans up stuck speech states
 	useEffect(() => {
 		const speechMonitor = setInterval(() => {
@@ -1490,6 +1428,244 @@ export default function Home() {
 		return null
 	}
 
+	// Parse simple reminder intents like:
+	// - "remind me to buy milk at 7 pm"
+	// - "set a reminder for meeting at 14:30"
+	// - "remind me at 8:15 to call mom"
+	const detectReminderFromText = (raw: string): ReminderFormData | null => {
+		const text = (raw || '').toLowerCase()
+		if (!/(remind\s+me|set\s+(a\s+)?reminder|add\s+(a\s+)?reminder|make\s+(a\s+)?reminder|create\s+(a\s+)?reminder|remember\s+to)/i.test(text)) return null
+
+		// Extract time phrases (optional)
+		const time = extractTimeFromText(text)
+
+		// Extract title around "to", "for", or "of"
+		let title = ''
+		// Try pattern: remind me to <title> at <time>
+		const toMatch = text.match(/remind\s+me\s+to\s+(.+?)\s+at\s+[0-9:apm\.\s]+/)
+		if (toMatch && toMatch[1]) title = toMatch[1].trim()
+		// Try pattern: set a reminder for <title> at <time>
+		if (!title) {
+			const forMatch = text.match(/reminder\s+for\s+(.+?)\s+at\s+[0-9:apm\.\s]+/)
+			if (forMatch && forMatch[1]) title = forMatch[1].trim()
+		}
+		// Try pattern: remind me at <time> to <title>
+		if (!title) {
+			const atThenTo = text.match(/remind\s+me\s+at\s+[0-9:apm\.\s]+\s+to\s+(.+)/)
+			if (atThenTo && atThenTo[1]) title = atThenTo[1].trim()
+		}
+		// New: set/add/make/create reminder to <title>
+		if (!title) {
+			const setTo = text.match(/(?:set|add|make|create)\s+(?:a\s+)?reminder\s+(?:to|for|of)\s+(.+)/)
+			if (setTo && setTo[1]) title = setTo[1].trim()
+		}
+		// New: reminder of <title>
+		if (!title) {
+			const ofMatch = text.match(/reminder\s+of\s+(.+)/)
+			if (ofMatch && ofMatch[1]) title = ofMatch[1].trim()
+		}
+		// New: remember to <title>
+		if (!title) {
+			const remember = text.match(/remember\s+to\s+(.+)/)
+			if (remember && remember[1]) title = remember[1].trim()
+		}
+
+		// Fallback: if still empty, grab words after "remind me" up to "at"
+		if (!title) {
+			const generic = text.match(/remind\s+me\s+(?:to\s+)?(.+?)\s+at\s+[0-9:apm\.\s]+/)
+			if (generic && generic[1]) title = generic[1].trim()
+		}
+
+		// Clean title
+		title = title.replace(/\s+$/, '')
+		// Trim trailing filler like "for me", "please", and any trailing "at <time>" duplicates
+		title = title.replace(/\s*(?:please|for\s+me)\s*$/i, '')
+		if (time) {
+			// Remove any trailing "at <time>" snippet from title
+			title = title.replace(/\s+at\s+[0-9:apm\.\s]+$/i, '').trim()
+		}
+		// Remove leading time fragments from title (e.g., "18:50 p.m. buy milk")
+		title = title.replace(/^(?:\d{1,2}:\d{2}|\d{3,4}|\d{1,2})(?:\s*(?:a\.?m\.?|p\.?m\.?|am|pm))?[\s.,-]+/i, '').trim()
+		// Fallback: if still empty, set a generic title
+		if (!title) title = 'Reminder'
+
+		const reminder: ReminderFormData = {
+			title,
+			time,
+			repeatMode: 'today'
+		}
+		return reminder
+	}
+
+	// Convert time expressions to HH:mm (24h)
+	const extractTimeFromText = (text: string): string | null => {
+		// noon/midnight
+		if (/\bat\s+noon\b/.test(text)) return '12:00'
+		if (/\bat\s+midnight\b/.test(text)) return '00:00'
+
+		// HH:MM (24h)
+		const hhmm24 = text.match(/\b(\d{1,2}):(\d{2})\b/)
+		if (hhmm24) {
+			const h = Math.max(0, Math.min(23, parseInt(hhmm24[1], 10)))
+			const m = Math.max(0, Math.min(59, parseInt(hhmm24[2], 10)))
+			return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`
+		}
+
+		// H(:MM)? am/pm (allow dots and optional spaces: a.m., p. m., etc.)
+		const ampm = text.match(/\b(\d{1,2})(?::(\d{2}))?\s*(a\.?\s*m\.?|p\.?\s*m\.?|am|pm)\b/)
+		if (ampm) {
+			let h = parseInt(ampm[1], 10)
+			const m = ampm[2] ? parseInt(ampm[2], 10) : 0
+			const isPM = /p/i.test(ampm[3])
+			if (h <= 12) {
+				if (h === 12) h = isPM ? 12 : 0
+				else if (isPM) h += 12
+			}
+			return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`
+		}
+
+		// at H MM (space separated) with optional am/pm, e.g. "at 18 53" or "at 6 53 pm"
+		const spaced = text.match(/\bat\s+(\d{1,2})\s+(\d{2})(?:\s*(a\.?\s*m\.?|p\.?\s*m\.?|am|pm))?\b/)
+		if (spaced) {
+			let h = parseInt(spaced[1], 10)
+			const m = parseInt(spaced[2], 10)
+			const suffix = spaced[3]
+			if (suffix) {
+				const isPM = /p/i.test(suffix)
+				if (h === 12) h = isPM ? 12 : 0
+				else if (isPM) h += 12
+			}
+			return `${Math.max(0, Math.min(23, h)).toString().padStart(2, '0')}:${Math.max(0, Math.min(59, m)).toString().padStart(2, '0')}`
+		}
+
+		// H MM anywhere (space separated) with optional am/pm, e.g. "18 53" or "6 53 pm"
+		const spacedAnywhere = text.match(/\b(\d{1,2})\s+(\d{2})(?:\s*(a\.?\s*m\.?|p\.?\s*m\.?|am|pm))?(?=[^a-z]|$)/i)
+		if (spacedAnywhere) {
+			let h = parseInt(spacedAnywhere[1], 10)
+			const m = parseInt(spacedAnywhere[2], 10)
+			const suffix = spacedAnywhere[3]
+			if (suffix) {
+				const isPM = /p/i.test(suffix)
+				if (h === 12) h = isPM ? 12 : 0
+				else if (isPM) h += 12
+			}
+			return `${Math.max(0, Math.min(23, h)).toString().padStart(2, '0')}:${Math.max(0, Math.min(59, m)).toString().padStart(2, '0')}`
+		}
+
+		// at HHMM or HMM (compact digits), e.g. "at 1853" or "at 853"
+		const compact = text.match(/\bat\s+(\d{3,4})\b/)
+		if (compact) {
+			const num = parseInt(compact[1], 10)
+			let h = Math.floor(num / 100)
+			let m = num % 100
+			if (h > 23) h = 23
+			if (m > 59) m = 59
+			return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`
+		}
+
+		// HH:MM with am/pm suffix allowing dots, e.g. "18:50 p.m." (we ignore suffix if 24h hour)
+		const hhmm12 = text.match(/\b(\d{1,2}):(\d{2})\s*(a\.?\s*m\.?|p\.?\s*m\.?|am|pm)\b/)
+		if (hhmm12) {
+			let h = parseInt(hhmm12[1], 10)
+			const m = parseInt(hhmm12[2], 10)
+			const isPM = /p/i.test(hhmm12[3])
+			if (h <= 12) {
+				if (h === 12) h = isPM ? 12 : 0
+				else if (isPM) h += 12
+			}
+			return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`
+		}
+
+		// Compact digits with am/pm suffix, e.g. "1853 p.m." or "853 pm"
+		const compactWithSuffix = text.match(/\b(\d{3,4})\s*(a\.?\s*m\.?|p\.?\s*m\.?|am|pm)(?=[^a-z]|$)/i)
+		if (compactWithSuffix) {
+			const num = parseInt(compactWithSuffix[1], 10)
+			let h = Math.floor(num / 100)
+			let m = num % 100
+			const isPM = /p/i.test(compactWithSuffix[2])
+			if (h <= 12) {
+				if (h === 12) h = isPM ? 12 : 0
+				else if (isPM) h += 12
+			}
+			if (h > 23) h = 23
+			if (m > 59) m = 59
+			return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`
+		}
+
+		// Naked 3-4 digit time anywhere, e.g. "1853"
+		const compactAnywhere = text.match(/\b(\d{3,4})\b(?=[^a-z]|$)/)
+		if (compactAnywhere) {
+			const num = parseInt(compactAnywhere[1], 10)
+			let h = Math.floor(num / 100)
+			let m = num % 100
+			if (h > 23 || m > 59) {
+				// Ignore unrealistic combos
+			} else {
+				return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`
+			}
+		}
+
+		// Bare H with am/pm suffix anywhere, e.g. "6 pm"
+		const hourWithSuffix = text.match(/\b(\d{1,2})\s*(a\.?\s*m\.?|p\.?\s*m\.?|am|pm)\b/)
+		if (hourWithSuffix) {
+			let h = parseInt(hourWithSuffix[1], 10)
+			const isPM = /p/i.test(hourWithSuffix[2])
+			if (h === 12) h = isPM ? 12 : 0
+			else if (isPM) h += 12
+			return `${Math.max(0, Math.min(23, h)).toString().padStart(2, '0')}:00`
+		}
+
+		// at H (assume current day, minutes 00)
+		const atH = text.match(/\bat\s+(\d{1,2})\b(?!\s*[:\d])/)
+		if (atH) {
+			const h = Math.max(0, Math.min(23, parseInt(atH[1], 10)))
+			return `${h.toString().padStart(2, '0')}:00`
+		}
+
+		return null
+	}
+
+	const formatTimeForSpeech = (hhmm: string): string => {
+		const [hStr, mStr] = hhmm.split(':')
+		let h = parseInt(hStr, 10)
+		const m = parseInt(mStr, 10)
+		const suffix = h >= 12 ? 'PM' : 'AM'
+		h = h % 12
+		if (h === 0) h = 12
+		return `${h}:${m.toString().padStart(2, '0')} ${suffix}`
+	}
+
+	// Create a crafted, friendly reminder message
+	const craftReminderSpeech = (rawTitle: string, time?: string): string => {
+		const title = (rawTitle || '').trim()
+		const timeStr = time ? formatTimeForSpeech(time) : ''
+		const hour = new Date().getHours()
+		const timeEmoji = hour < 12 ? '☀️' : hour < 17 ? '🌤️' : hour < 21 ? '🌆' : '🌙'
+
+		const lower = title.toLowerCase()
+		const cap = title.charAt(0).toUpperCase() + title.slice(1)
+
+		const sayTime = timeStr ? ` It's ${timeStr}.` : ''
+
+		if (lower.startsWith('call ')) return `${timeEmoji} Quick check-in time: ${cap}.${sayTime ? sayTime : ''}`.trim()
+		if (lower.startsWith('text ') || lower.startsWith('message ')) return `${timeEmoji} Send a note: ${cap}.${sayTime ? sayTime : ''}`.trim()
+		if (lower.startsWith('drink ') || lower.includes('water')) return `💧 Hydration break! ${cap}.${sayTime ? sayTime : ''}`.trim()
+		if (lower.startsWith('take ')) return `⏰ Time to ${lower}.` + (sayTime ? sayTime : '')
+		if (lower.includes('meeting') || lower.includes('meet')) return `📅 Your meeting starts now: ${cap}.${sayTime ? sayTime : ''}`.trim()
+		if (lower.includes('medicine') || lower.includes('meds')) return `💊 Please take your medicine now.${sayTime ? ' ' + timeStr : ''}`.trim()
+		if (lower.includes('birthday')) return `🎉 Don't miss it—${cap}.${sayTime ? sayTime : ''}`.trim()
+		if (lower.includes('pay') || lower.includes('bill') || lower.includes('tax')) return `💼 Friendly nudge: ${cap}.${sayTime ? sayTime : ''}`.trim()
+
+		const starters = [
+			`${timeEmoji} Little nudge: ${cap}.`,
+			`${timeEmoji} Heads up—${cap}.`,
+			`${timeEmoji} Hey! It's time: ${cap}.`,
+			`${timeEmoji} Reminder for you: ${cap}.`
+		]
+		const base = starters[Math.floor(Math.random() * starters.length)]
+		return base + (timeStr ? ` It's ${timeStr}.` : '')
+	}
+
 	const handleSendToGemini = async (text: string) => {
 		setIsProcessing(true)
 		setTranscript('') // Clear transcript immediately
@@ -1497,6 +1673,27 @@ export default function Home() {
 		const userMessage: ConversationMessage = { role: 'user', content: text }
 		const updatedHistory = [...conversationHistory, userMessage]
 		try {
+			console.log('🎤 Heard:', text)
+			// Reminder intent detection
+			const reminderData = detectReminderFromText(text)
+			if (reminderData) {
+				try {
+					console.log('📝 Detected reminder:', reminderData)
+					await createReminder(reminderData)
+					console.log('✅ Reminder created in Firestore')
+					const spokenTime = reminderData.time ? formatTimeForSpeech(reminderData.time) : ''
+					const confirm = reminderData.time
+						? `Okay, reminder set for ${spokenTime}: ${reminderData.title}.`
+						: `Okay, reminder set: ${reminderData.title}.`
+					speakResponse(confirm)
+				} catch (e) {
+					console.error('❌ Failed to create reminder:', e)
+					speakResponse('Sorry, I could not set that reminder.')
+				}
+				setIsProcessing(false)
+				return
+			}
+
 			// Game intent detection for available games
 			const detected = detectGameFromText(text)
 			let pendingGame: { game: 'tictactoe' | 'trivia' | 'sudoku' | 'color', aiMode: boolean } | null = null
@@ -1963,5 +2160,4 @@ export default function Home() {
 		</>
 	)
 }
-
 
