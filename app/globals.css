@@ -106,3 +106,43 @@ body { margin: 0; background: #000; color: #ededed; font-family: Inter, system-u
   animation: speak 0.7s infinite;
 }
 
+/* Color detection game animations */
+@keyframes pulse {
+  0% { transform: translate(-50%, -50%) scale(1); opacity: 0.8; }
+  50% { transform: translate(-50%, -50%) scale(1.1); opacity: 1; }
+  100% { transform: translate(-50%, -50%) scale(1); opacity: 0.8; }
+}
+
+@keyframes successPulse {
+  0% { transform: scale(0.8); opacity: 0; }
+  50% { transform: scale(1.1); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+@keyframes colorGameFadeIn {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes colorDetected {
+  0% { background-color: rgba(8, 175, 192, 0.2); }
+  50% { background-color: rgba(34, 197, 94, 0.4); }
+  100% { background-color: rgba(8, 175, 192, 0.2); }
+}
+
+.color-game-modal {
+  animation: colorGameFadeIn 0.3s ease-out;
+}
+
+.detection-circle {
+  transition: all 0.3s ease;
+}
+
+.detection-circle.active {
+  animation: pulse 1s infinite;
+}
+
+.detection-circle.success {
+  animation: colorDetected 0.5s ease-out;
+}
+
