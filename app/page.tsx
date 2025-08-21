@@ -765,178 +765,451 @@ export default function Home() {
 	const [ticTacToeAiMode, setTicTacToeAiMode] = useState(false)
 	const [pendingGameLaunch, setPendingGameLaunch] = useState<{ game: 'tictactoe' | 'trivia' | 'sudoku', aiMode: boolean } | null>(null)
 	const [speechPermissionGranted, setSpeechPermissionGranted] = useState(false)
+	const [voicesLoaded, setVoicesLoaded] = useState(false)
 
 	const requestSpeechPermission = () => {
 		setSpeechPermissionGranted(true)
 	}
 
-
-	const recognitionRef = useRef<any>(null)
-	const animationFrameRef = useRef<number | null>(null)
-	const finalTranscriptRef = useRef('')
-	const silenceTimeoutRef = useRef<any>(null)
-	const lastSpeechTimeRef = useRef(Date.now())
-	const processingTriggeredRef = useRef(false)
-	const isRecognitionRunningRef = useRef(false)
-	const isRecognitionStartingRef = useRef(false)
-	const restartTimeoutRef = useRef<any>(null)
-	const shouldListenRef = useRef(false)
-
-	const safeStartRecognition = () => {
-		const recognition = recognitionRef.current
-		if (!recognition) return
-		if (!shouldListenRef.current) return
-		if (isRecognitionRunningRef.current || isRecognitionStartingRef.current) return
-		
-		// Extra safety check for speech synthesis
-		if (typeof window !== 'undefined' && window.speechSynthesis) {
-			if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
-				console.log('Delaying recognition start: speech synthesis active')
-				scheduleStartRecognition(1000)
-				return
+	// Function to manually reset all recognition flags
+	const resetRecognitionFlags = () => {
+		isStartingRef.current = false
+		isStoppingRef.current = false
+		shouldListenRef.current = true
+		setIsListening(false)
+		// Force a fresh start
+		setTimeout(() => {
+			if (canStartRecognition()) {
+				startRecognition()
 			}
-		}
-
-		isRecognitionStartingRef.current = true
-		try {
-			console.log('Starting speech recognition...')
-			recognition.start()
-		} catch (e) {
-			console.error('Recognition start failed:', e)
-			isRecognitionStartingRef.current = false
-			// schedule a retry if start failed
-			if (restartTimeoutRef.current) clearTimeout(restartTimeoutRef.current)
-			restartTimeoutRef.current = setTimeout(() => {
-				if (shouldListenRef.current && !isRecognitionRunningRef.current) {
-					safeStartRecognition()
-				}
-			}, 1000) // Longer delay on failure
-		}
+		}, 1000)
 	}
 
-	const scheduleStartRecognition = (delay = 600) => {
-		if (restartTimeoutRef.current) clearTimeout(restartTimeoutRef.current)
-		restartTimeoutRef.current = setTimeout(() => {
-			if (shouldListenRef.current && !isRecognitionRunningRef.current) {
-				safeStartRecognition()
-			}
-		}, delay)
-	}
-
-	useEffect(() => {
+	// Function to reinitialize recognition if needed
+	const reinitializeRecognition = () => {
 		if (typeof window === 'undefined') return
+		
 		const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
-		if (!SpeechRecognition) return
+		if (!SpeechRecognition) {
+			return
+		}
+		
+		// Clean up existing recognition
+		if (recognitionRef.current) {
+			try {
+				recognitionRef.current.stop()
+			} catch (e) {}
+		}
+		
+		// Reset flags
+		isStartingRef.current = false
+		isStoppingRef.current = false
+		setIsListening(false)
+		
+		// Create new recognition instance
 		const recognition = new SpeechRecognition()
 		recognition.continuous = true
 		recognition.interimResults = true
 		recognition.lang = 'en-US'
+		
+		// Set up event handlers (reuse the same logic from main useEffect)
 		recognition.onstart = () => {
 			setIsListening(true)
+			isStartingRef.current = false
 			finalTranscriptRef.current = ''
 			setTranscript('')
-			processingTriggeredRef.current = false
-			isRecognitionRunningRef.current = true
-			isRecognitionStartingRef.current = false
 		}
+		
 		recognition.onresult = (event: any) => {
-			// Stronger checks to prevent interference with speech
+			// Only process input if we're not speaking or processing
 			if (isSpeaking || isProcessing) {
-				console.log('Ignoring speech input: AI is speaking or processing')
+				return
+			}
+
+			let interim = ''
+			let final = ''
+			
+			for (let i = event.resultIndex; i < event.results.length; ++i) {
+				if (event.results[i].isFinal) {
+					final += event.results[i][0].transcript
+				} else {
+					interim += event.results[i][0].transcript
+				}
+			}
+			
+			finalTranscriptRef.current = final
+			setTranscript(final || interim)
+			
+			// Clear any existing silence timeout
+			if (silenceTimeoutRef.current) {
+				clearTimeout(silenceTimeoutRef.current)
+			}
+			
+			// If we have interim results, wait for silence before processing
+			if (interim.trim() && !final) {
+				silenceTimeoutRef.current = setTimeout(() => {
+					const current = finalTranscriptRef.current || interim
+					if (current.trim() && !isProcessing && !isSpeaking) {
+						handleSendToGemini(current)
+					}
+				}, 1000) // Wait 1 second of silence
+			}
+			
+			// If we have final results, process immediately
+			if (final.trim() && !isProcessing && !isSpeaking) {
+				handleSendToGemini(final)
+			}
+		}
+		
+		recognition.onend = () => {
+
+			setIsListening(false)
+			isStartingRef.current = false
+			isStoppingRef.current = false
+			
+			// Auto-restart if we should still be listening
+			if (shouldListenRef.current && !isSpeaking && !isProcessing) {
+
+				setTimeout(() => {
+					if (canStartRecognition()) {
+						startRecognition()
+					}
+				}, 2000)
+			}
+		}
+		
+		recognition.onerror = (event: any) => {
+
+			setIsListening(false)
+			isStartingRef.current = false
+			isStoppingRef.current = false
+			
+			// Handle specific error types
+			if (event.error === 'not-allowed') {
+
 				return
 			}
 			
-			// Extra check for actual speech synthesis state
-			if (typeof window !== 'undefined' && window.speechSynthesis) {
-				if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
-					console.log('Ignoring speech input: synthesis is active')
-					return
+			// Restart on other errors if we should still be listening
+			if (shouldListenRef.current && !isSpeaking && !isProcessing) {
+
+				setTimeout(() => {
+					if (canStartRecognition()) {
+						startRecognition()
+					}
+				}, 3000) // Longer delay for error recovery
+			}
+		}
+		
+		recognitionRef.current = recognition
+		
+		// Start recognition if we should be listening
+		if (shouldListenRef.current && !isProcessing && !isSpeaking) {
+			setTimeout(() => {
+				if (canStartRecognition()) {
+					startRecognition()
+				}
+			}, 1000)
+		}
+	}
+
+	// Function to check recognition state
+	const checkRecognitionState = () => {
+		const recognition = recognitionRef.current
+		if (!recognition) {
+			return
+		}
+		
+		// State check logic without console output
+	}
+
+	// Simplified refs for voice recognition
+	const recognitionRef = useRef<any>(null)
+	const animationFrameRef = useRef<number | null>(null)
+	const finalTranscriptRef = useRef('')
+	const silenceTimeoutRef = useRef<any>(null)
+	const restartTimeoutRef = useRef<any>(null)
+	const shouldListenRef = useRef(true)
+	const isStartingRef = useRef(false) // Track if we're in the process of starting
+	const isStoppingRef = useRef(false) // Track if we're in the process of stopping
+	const lastRestartAttemptRef = useRef(0) // Track last restart attempt to prevent rapid restarts
+
+	// Helper function to check if recognition is in a valid state to start
+	const canStartRecognition = () => {
+		const recognition = recognitionRef.current
+		if (!recognition) return false
+		
+		// Check if recognition is already in an active state
+		try {
+			// Try to access the state property if it exists
+			const state = (recognition as any).state
+			if (state && (state === 'recording' || state === 'starting')) {
+
+				return false
+			}
+		} catch (e) {
+			// If we can't check state, fall back to our flags
+		}
+		
+		// Check cooldown period (minimum 2 seconds between restart attempts)
+		const now = Date.now()
+		if (now - lastRestartAttemptRef.current < 2000) {
+
+			return false
+		}
+		
+		return !isListening && !isStartingRef.current && shouldListenRef.current
+	}
+
+	// Simplified recognition start function
+	const startRecognition = () => {
+		const recognition = recognitionRef.current
+		if (!recognition || !shouldListenRef.current) return
+		
+		// Use the helper function to check if we can start
+		if (!canStartRecognition()) {
+
+			return
+		}
+		
+		isStartingRef.current = true
+		lastRestartAttemptRef.current = Date.now() // Record restart attempt timestamp
+		
+		try {
+
+			recognition.start()
+		} catch (e) {
+
+			isStartingRef.current = false
+			
+			// Handle specific error types
+			if (e instanceof Error) {
+				if (e.name === 'InvalidStateError') {
+
+					// Force reset the recognition state and mark as listening to prevent loops
+					try {
+						recognition.stop()
+						setIsListening(true) // Assume it's actually running
+					} catch (stopError) {
+
+					}
+					// Don't retry immediately - let the onend/onerror handlers deal with it
+				} else if (e.name === 'NotAllowedError') {
+
+					// Don't retry for permission errors
+				} else {
+
+									// Retry other errors with longer delay
+				setTimeout(() => {
+					if (canStartRecognition()) {
+						startRecognition()
+					}
+				}, 3000)
+				}
+							} else {
+
+					setTimeout(() => {
+						if (canStartRecognition()) {
+							startRecognition()
+						}
+					}, 3000)
+				}
+		}
+	}
+
+	// Simplified recognition stop function
+	const stopRecognition = () => {
+		const recognition = recognitionRef.current
+		if (!recognition) return
+		
+		// Prevent multiple simultaneous stop attempts
+		if (!isListening || isStoppingRef.current) {
+
+			return
+		}
+		
+		isStoppingRef.current = true
+		
+		try {
+
+			recognition.stop()
+		} catch (e) {
+
+			isStoppingRef.current = false
+		}
+	}
+
+	// Load voices when component mounts
+	useEffect(() => {
+		if (typeof window === 'undefined') return
+		
+		const loadVoices = () => {
+			const synth = window.speechSynthesis
+			if (synth) {
+				const voices = synth.getVoices()
+				if (voices.length > 0) {
+					setVoicesLoaded(true)
+				} else {
+					// Try again after a short delay
+					setTimeout(loadVoices, 100)
 				}
 			}
-
-			lastSpeechTimeRef.current = Date.now()
-			let interim = ''; let final = ''
-			for (let i = event.resultIndex; i < event.results.length; ++i) {
-				if (event.results[i].isFinal) final += event.results[i][0].transcript
-				else interim += event.results[i][0].transcript
-			}
-			finalTranscriptRef.current = final
-			setTranscript(final || interim)
-			if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current)
-			if (interim.trim() && !final && !processingTriggeredRef.current) {
-				silenceTimeoutRef.current = setTimeout(() => {
-					const current = finalTranscriptRef.current || interim
-					if (current.trim() && !isProcessing) {
-						processingTriggeredRef.current = true
-						finalTranscriptRef.current = ''
-						setTranscript('')
-						handleSendToGemini(current)
-						// Stop recognition so TTS/processing can proceed without capturing its own voice
-						if (recognitionRef.current && isRecognitionRunningRef.current) {
-							try { recognitionRef.current.stop() } catch {}
-						}
-					}
-				}, 800)
-			}
-			if (final.trim() && !processingTriggeredRef.current) {
-				processingTriggeredRef.current = true
-				setTimeout(() => {
-					if (!isProcessing && finalTranscriptRef.current.trim()) {
-						const textToProcess = finalTranscriptRef.current
-						finalTranscriptRef.current = ''
-						setTranscript('')
-						handleSendToGemini(textToProcess)
-						if (recognitionRef.current && isRecognitionRunningRef.current) {
-							try { recognitionRef.current.stop() } catch {}
-						}
-					}
-				}, 300)
-			}
 		}
-		recognition.onend = () => {
-			setIsListening(false)
-			isRecognitionRunningRef.current = false
-			isRecognitionStartingRef.current = false
-			// Auto-restart when allowed, with debounce to avoid loops
-			if (shouldListenRef.current) scheduleStartRecognition(700)
+		
+		loadVoices()
+		
+		// Also listen for voiceschanged event
+		if (window.speechSynthesis) {
+			window.speechSynthesis.onvoiceschanged = loadVoices
 		}
-		recognition.onerror = () => {
-			setIsListening(false)
-			isRecognitionRunningRef.current = false
-			isRecognitionStartingRef.current = false
-			if (shouldListenRef.current) scheduleStartRecognition(1000)
-		}
-		recognitionRef.current = recognition
+		
 		return () => {
-			if (restartTimeoutRef.current) clearTimeout(restartTimeoutRef.current)
-			try { recognition.stop() } catch {}
+			if (window.speechSynthesis) {
+				window.speechSynthesis.onvoiceschanged = null
+			}
 		}
 	}, [])
 
 	useEffect(() => {
+		if (typeof window === 'undefined') return
+		
+		const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+		if (!SpeechRecognition) return
+		
+		const recognition = new SpeechRecognition()
+		recognition.continuous = true
+		recognition.interimResults = true
+		recognition.lang = 'en-US'
+		
+		recognition.onstart = () => {
+
+			setIsListening(true)
+			isStartingRef.current = false // Reset starting flag
+			finalTranscriptRef.current = ''
+			setTranscript('')
+		}
+		
+		recognition.onresult = (event: any) => {
+			// Only process input if we're not speaking or processing
+			if (isSpeaking || isProcessing) {
+				return
+			}
+
+			let interim = ''
+			let final = ''
+			
+			for (let i = event.resultIndex; i < event.results.length; ++i) {
+				if (event.results[i].isFinal) {
+					final += event.results[i][0].transcript
+				} else {
+					interim += event.results[i][0].transcript
+				}
+			}
+			
+			finalTranscriptRef.current = final
+			setTranscript(final || interim)
+			
+			// Clear any existing silence timeout
+			if (silenceTimeoutRef.current) {
+				clearTimeout(silenceTimeoutRef.current)
+			}
+			
+			// If we have interim results, wait for silence before processing
+			if (interim.trim() && !final) {
+				silenceTimeoutRef.current = setTimeout(() => {
+					const current = finalTranscriptRef.current || interim
+					if (current.trim() && !isProcessing && !isSpeaking) {
+						handleSendToGemini(current)
+					}
+				}, 1000) // Wait 1 second of silence
+			}
+			
+			// If we have final results, process immediately
+			if (final.trim() && !isProcessing && !isSpeaking) {
+				handleSendToGemini(final)
+			}
+		}
+		
+		recognition.onend = () => {
+
+			setIsListening(false)
+			isStartingRef.current = false // Reset starting flag
+			isStoppingRef.current = false // Reset stopping flag
+			
+							// Auto-restart if we should still be listening, but with longer delay
+				if (shouldListenRef.current && !isSpeaking && !isProcessing) {
+	
+					// Use a much longer delay to avoid rapid restart loops
+					setTimeout(() => {
+						if (canStartRecognition()) {
+							startRecognition()
+						}
+					}, 2000)
+				}
+		}
+		
+		recognition.onerror = (event: any) => {
+
+			setIsListening(false)
+			isStartingRef.current = false // Reset starting flag
+			isStoppingRef.current = false // Reset stopping flag
+			
+			// Handle specific error types
+			if (event.error === 'not-allowed') {
+
+				return
+			}
+			
+			// Restart on other errors if we should still be listening, but with much longer delay
+			if (shouldListenRef.current && !isSpeaking && !isProcessing) {
+
+				setTimeout(() => {
+					if (canStartRecognition()) {
+						startRecognition()
+					}
+				}, 5000) // Much longer delay for error recovery to prevent loops
+			}
+		}
+		
+		recognitionRef.current = recognition
+		
+		// Start recognition immediately
+		startRecognition()
+		
+		return () => {
+			try {
+				recognition.stop()
+			} catch (e) {}
+			// Reset all flags on cleanup
+			isStartingRef.current = false
+			isStoppingRef.current = false
+			shouldListenRef.current = false
+		}
+	}, [])
+
+	// Simplified effect to manage when recognition should be active
+	useEffect(() => {
 		shouldListenRef.current = !isProcessing && !isSpeaking
 		
-		// Extra check: also monitor if browser's speechSynthesis is actually speaking
-		if (typeof window !== 'undefined' && window.speechSynthesis) {
-			if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
-				shouldListenRef.current = false
-				console.log('Blocking recognition: speech synthesis is active')
-			}
-		}
 
+		
 		if (shouldListenRef.current) {
-			// Start if stopped
-			if (!isRecognitionRunningRef.current) {
-				scheduleStartRecognition(400)
+			// Start recognition if it's not already running and not in the middle of starting/stopping
+			if (!isListening && recognitionRef.current && !isStartingRef.current && !isStoppingRef.current) {
+
+				setTimeout(() => {
+					if (canStartRecognition()) {
+						startRecognition()
+					}
+				}, 1000)
 			}
 		} else {
-			// Stop if currently running
-			if (recognitionRef.current && isRecognitionRunningRef.current) {
-				console.log('Stopping recognition:', { isProcessing, isSpeaking })
-				try { recognitionRef.current.stop() } catch {}
+			// Stop recognition if it's running and not in the middle of stopping
+			if (isListening && recognitionRef.current && !isStoppingRef.current) {
+				stopRecognition()
 			}
 		}
-	}, [isProcessing, isSpeaking])
+	}, [isProcessing, isSpeaking, isListening])
 
 	useEffect(() => {
 		const animate = () => { setMouthAnimation(prev => (prev + 0.15) % (Math.PI * 2)); animationFrameRef.current = requestAnimationFrame(animate) }
@@ -950,16 +1223,47 @@ export default function Home() {
 			if (typeof window !== 'undefined' && window.speechSynthesis) {
 				// If we think we're speaking but synthesis says we're not, clean up
 				if (isSpeaking && !window.speechSynthesis.speaking && !window.speechSynthesis.pending) {
-					console.log('Detected stuck speech state, cleaning up')
+
 					setIsSpeaking(false)
 					setAiResponse('')
-					if (!isProcessing) scheduleStartRecognition(400)
+					if (!isProcessing && !isStartingRef.current) {
+						setTimeout(() => {
+							if (canStartRecognition()) {
+								startRecognition()
+							}
+						}, 2000)
+					}
 				}
 			}
-		}, 1000) // Check every second
+		}, 2000) // Check every 2 seconds instead of 1 to reduce conflicts
 
 		return () => clearInterval(speechMonitor)
 	}, [isSpeaking, isProcessing])
+
+	// Voice recognition health check - ensures it stays active
+	useEffect(() => {
+		const healthCheck = setInterval(() => {
+			// Only restart if we should be listening, recognition isn't active, and we're not in the middle of starting/stopping
+			if (shouldListenRef.current && 
+				!isListening && 
+				recognitionRef.current && 
+				!isSpeaking && 
+				!isProcessing && 
+				!isStartingRef.current && 
+				!isStoppingRef.current) {
+				
+
+				// Use a much longer delay to avoid conflicts with other restart attempts
+				setTimeout(() => {
+					if (canStartRecognition()) {
+						startRecognition()
+					}
+				}, 3000)
+			}
+		}, 5000) // Check every 5 seconds instead of 3 to reduce conflicts
+
+		return () => clearInterval(healthCheck)
+	}, [isListening, isSpeaking, isProcessing])
 
 	const handleGameEnd = (result: 'user' | 'ai' | 'draw') => {
 		// Close the game modal
@@ -1001,19 +1305,19 @@ export default function Home() {
 	}
 
 	const launchGame = (key: 'tictactoe' | 'trivia' | 'sudoku', aiMode: boolean = true) => {
-		console.log('🎮 launchGame called with:', key, 'aiMode:', aiMode);
+
 		
 		if (key === 'tictactoe') {
-			console.log('🎮 Launching Tic Tac Toe');
+
 			setTicTacToeAiMode(aiMode)
 			setShowTicTacToe(true)
 		}
 		if (key === 'trivia') {
-			console.log('🎮 Launching Trivia');
+
 			setShowTrivia(true);
 		}
 		if (key === 'sudoku') {
-			console.log('🎮 Launching Sudoku');
+
 			setShowSudoku(true);
 		}
 	}
@@ -1023,8 +1327,7 @@ export default function Home() {
 		// Normalize punctuation and spaces
 		const cleaned = text.replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim()
 		
-		console.log('🔍 detectGameFromText input:', raw);
-		console.log('🔍 detectGameFromText cleaned:', cleaned);
+
 		
 		// Common game-starting phrases
 		const hasPlayVerb = /\b(let\s*us|lets|let's)?\s*(play|start|launch|open)\b|\b(can\s+we|should\s+we|want\s+to|time\s+to|time\s+for)\s+(play|start)\b|\bi\s+(want|wanna)\s+(to\s+)?(play|start)\b/.test(cleaned)
@@ -1073,6 +1376,8 @@ export default function Home() {
 
 	const handleSendToGemini = async (text: string) => {
 		setIsProcessing(true)
+		setTranscript('') // Clear transcript immediately
+		finalTranscriptRef.current = ''
 		const userMessage: ConversationMessage = { role: 'user', content: text }
 		const updatedHistory = [...conversationHistory, userMessage]
 		try {
@@ -1095,7 +1400,7 @@ export default function Home() {
 			
 			speakResponse(data.response, pendingGame)
 		} catch (error) {
-			console.error('Error in handleSendToGemini:', error)
+
 			speakResponse('Sorry, I had trouble understanding that.')
 		} finally {
 			setIsProcessing(false)
@@ -1103,11 +1408,7 @@ export default function Home() {
 	}
 
 	const speakResponse = (text: string, pendingGame?: { game: 'tictactoe' | 'trivia' | 'sudoku', aiMode: boolean } | null) => {
-		console.log('speakResponse called with:', text)
-		console.log('pendingGame parameter:', pendingGame)
-		console.log('pendingGameLaunch state:', pendingGameLaunch)
-		console.log('speechPermissionGranted state:', speechPermissionGranted)
-		console.log('window.speechSynthesis available:', typeof window !== 'undefined' && 'speechSynthesis' in window)
+
 		
 		setIsSpeaking(true)
 		setAiResponse(text)
@@ -1119,14 +1420,14 @@ export default function Home() {
 		let emergencyLaunchTimer: NodeJS.Timeout | null = null
 		if (gameToLaunch) {
 			emergencyLaunchTimer = setTimeout(() => {
-				console.log('🚨 Emergency game launch after 8 seconds!')
+
 				if (gameToLaunch) {
 					launchGame(gameToLaunch.game, gameToLaunch.aiMode)
 					setPendingGameLaunch(null)
 				}
 				setIsSpeaking(false)
 				setAiResponse('')
-				if (!isProcessing) scheduleStartRecognition(400)
+				if (!isProcessing && canStartRecognition()) startRecognition() // Restart recognition on emergency fallback
 			}, 8000)
 		}
 		
@@ -1134,7 +1435,7 @@ export default function Home() {
 		if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
 			if (speechPermissionGranted) {
 				const synth = window.speechSynthesis
-				console.log('Speech synthesis available and enabled, proceeding...')
+
 				
 				// Aggressively cancel any ongoing speech
 				try { 
@@ -1142,11 +1443,11 @@ export default function Home() {
 					// Wait a bit for cancel to complete
 					setTimeout(() => startSpeech(text, synth, gameToLaunch, emergencyLaunchTimer), 150)
 				} catch (e) {
-					console.error('Failed to cancel speech:', e)
+
 					startSpeech(text, synth, gameToLaunch, emergencyLaunchTimer)
 				}
 			} else {
-				console.warn('Speech synthesis available but not enabled, trying anyway...')
+
 				// Try anyway, maybe the state is wrong
 				const synth = window.speechSynthesis
 				try { 
@@ -1167,7 +1468,7 @@ export default function Home() {
 							setPendingGameLaunch(null)
 						}
 						
-						if (!isProcessing) scheduleStartRecognition(400)
+						if (!isProcessing && canStartRecognition()) startRecognition() // Restart recognition on speech setup failure
 					}, 4000)
 				}
 			}
@@ -1186,48 +1487,126 @@ export default function Home() {
 					setPendingGameLaunch(null)
 				}
 				
-				if (!isProcessing) scheduleStartRecognition(400)
+				if (!isProcessing && canStartRecognition()) startRecognition() // Restart recognition on speech fallback
 			}, 4000)
 		}
+	}
+
+	// Helper function to get the best available voice
+	const getBestVoice = (synth: SpeechSynthesis) => {
+		// Ensure voices are loaded
+		let voices = synth.getVoices()
+		
+		// If no voices available, try to load them
+		if (voices.length === 0) {
+			// Force voice loading by calling getVoices again
+			voices = synth.getVoices()
+			
+			// If still no voices, return null
+			if (voices.length === 0) {
+				return null
+			}
+		}
+		
+		
+		// Priority 1: English "child" or "kid" voice
+		let preferredVoice = voices.find(voice => 
+			voice.lang.startsWith('en') &&
+			(voice.name.toLowerCase().includes('child') || voice.name.toLowerCase().includes('kid'))
+		)
+
+		// Priority 2: Google English (US) female voice
+		if (!preferredVoice) {
+			preferredVoice = voices.find(voice => 
+				voice.name.toLowerCase().includes('google') && 
+				voice.lang.startsWith('en-US') && 
+				voice.name.toLowerCase().includes('female')
+			)
+		}
+		
+		// Priority 2: Any Google English (US) voice
+		if (!preferredVoice) {
+			preferredVoice = voices.find(voice => 
+				voice.name.toLowerCase().includes('google') && 
+				voice.lang.startsWith('en-US')
+			)
+		}
+		
+		// Priority 3: Any Google English voice
+		if (!preferredVoice) {
+			preferredVoice = voices.find(voice => 
+				voice.name.toLowerCase().includes('google') && 
+				voice.lang.startsWith('en')
+			)
+		}
+		
+		// Priority 4: Any English (US) female voice
+		if (!preferredVoice) {
+			preferredVoice = voices.find(voice => 
+				voice.lang.startsWith('en-US') && 
+				voice.name.toLowerCase().includes('female')
+			)
+		}
+		
+		// Priority 5: Any English (US) voice
+		if (!preferredVoice) {
+			preferredVoice = voices.find(voice => 
+				voice.lang.startsWith('en-US')
+			)
+		}
+		
+		// Priority 6: Any English voice
+		if (!preferredVoice) {
+			preferredVoice = voices.find(voice => 
+				voice.lang.startsWith('en')
+			)
+		}
+		
+		// Priority 7: Fallback to first available voice
+		if (!preferredVoice) {
+			preferredVoice = voices[0]
+		}
+		
+		return preferredVoice
 	}
 
 	const startSpeech = (text: string, synth: SpeechSynthesis, pendingGame?: { game: 'tictactoe' | 'trivia' | 'sudoku', aiMode: boolean } | null, emergencyTimer?: NodeJS.Timeout | null) => {
 		try {
 			const utter = new SpeechSynthesisUtterance(text)
-			utter.rate = 0.95
-			utter.pitch = 1.05
+			utter.rate = 1
+			utter.pitch = 1.6
 			utter.volume = 1
 
 			// Set up event handlers
 			utter.onstart = () => {
-				console.log('🔊 Speech started')
 				setIsSpeaking(true) // Ensure state is set
 			}
 
 			utter.onend = () => {
-				console.log('🔊 Speech ended')
 				if (emergencyTimer) clearTimeout(emergencyTimer)
 				setIsSpeaking(false)
 				setAiResponse('')
 				
 				// Launch pending game after speech ends
 				if (pendingGame) {
-					console.log('🎮 Launching game after speech:', pendingGame.game)
 					launchGame(pendingGame.game, pendingGame.aiMode)
 					setPendingGameLaunch(null)
 				}
 				
-				// Longer delay before restarting recognition to avoid conflicts
-				if (!isProcessing) scheduleStartRecognition(1000)
+				// Restart recognition after speech ends
+				if (!isProcessing) {
+					setTimeout(() => {
+						if (canStartRecognition()) {
+							startRecognition()
+						}
+					}, 1000)
+				}
 			}
 
 			utter.onerror = (event) => {
-				console.error('Speech synthesis error:', event.error)
-				
 				// Handle specific error types - note: TypeScript may not include all possible error types
 				const errorType = event.error as string
 				if (errorType === 'not-allowed' || errorType === 'authorization-failed') {
-					console.warn('Speech synthesis not allowed - disabling speech features')
 					setSpeechPermissionGranted(false)
 					
 					// Fall back to text display without speech
@@ -1239,35 +1618,43 @@ export default function Home() {
 						
 						// Launch pending game even if speech failed
 						if (pendingGame) {
-							console.log('🎮 Launching game after speech error:', pendingGame.game)
 							launchGame(pendingGame.game, pendingGame.aiMode)
 							setPendingGameLaunch(null)
 						}
 						
-						if (!isProcessing) scheduleStartRecognition(1000)
+						if (!isProcessing) {
+							setTimeout(() => {
+								if (canStartRecognition()) {
+									startRecognition()
+								}
+							}, 2000)
+						}
 					}, 4000)
 					return
 				}
 				
 				if (errorType === 'interrupted' || errorType === 'canceled') {
-					console.log('Speech was interrupted or cancelled')
 					if (emergencyTimer) clearTimeout(emergencyTimer)
 					setIsSpeaking(false)
 					setAiResponse('')
 					
 					// Launch pending game even if speech was interrupted
 					if (pendingGame) {
-						console.log('🎮 Launching game after speech interruption:', pendingGame.game)
 						launchGame(pendingGame.game, pendingGame.aiMode)
 						setPendingGameLaunch(null)
 					}
 					
-					if (!isProcessing) scheduleStartRecognition(500)
+					if (!isProcessing) {
+						setTimeout(() => {
+							if (canStartRecognition()) {
+								startRecognition()
+							}
+						}, 1000)
+					}
 					return
 				}
 				
 				// For other errors, try a fallback approach
-				console.warn('Speech error, falling back to text display')
 				if (emergencyTimer) clearTimeout(emergencyTimer)
 				setIsSpeaking(false)
 				setAiResponse(text)
@@ -1276,52 +1663,52 @@ export default function Home() {
 					
 					// Launch pending game even if speech had errors
 					if (pendingGame) {
-						console.log('🎮 Launching game after speech error:', pendingGame.game)
 						launchGame(pendingGame.game, pendingGame.aiMode)
 						setPendingGameLaunch(null)
 					}
 					
-					if (!isProcessing) scheduleStartRecognition(1000)
+					if (!isProcessing) {
+						setTimeout(() => {
+							if (canStartRecognition()) {
+								startRecognition()
+							}
+						}, 2000)
+					}
 				}, 3000)
 			}
 
 			// Try to resume synthesis in case it's paused
 			try { synth.resume() } catch (e) {}
 			
-			// Get voices and set a preferred one if available
-			const voices = synth.getVoices() || []
-			if (voices.length > 0) {
-				// Try to find a good English voice
-				const preferredVoice = voices.find(voice => 
-					voice.lang.startsWith('en') && voice.localService
-				) || voices.find(voice => voice.lang.startsWith('en')) || voices[0]
-				
-				if (preferredVoice) {
-					utter.voice = preferredVoice
-					console.log('Using voice:', preferredVoice.name)
-				}
+			// Get the best available voice
+			const preferredVoice = getBestVoice(synth)
+			if (preferredVoice) {
+				utter.voice = preferredVoice
 			}
 
-			console.log('Starting speech synthesis...')
 			synth.speak(utter)
 
 			// Fallback timeout in case speech fails silently
 			const speechTimeout = setTimeout(() => {
 				if (synth.speaking) {
-					console.log('Speech is still ongoing after timeout, letting it continue')
+					// Speech is still ongoing, let it continue
 				} else {
-					console.warn('Speech may have failed silently, cleaning up')
 					setIsSpeaking(false)
 					setAiResponse('')
 					
 					// Launch pending game even if speech failed silently
 					if (pendingGame) {
-						console.log('🎮 Launching game after speech timeout:', pendingGame.game)
 						launchGame(pendingGame.game, pendingGame.aiMode)
 						setPendingGameLaunch(null)
 					}
 					
-					if (!isProcessing) scheduleStartRecognition(400)
+					if (!isProcessing) {
+						setTimeout(() => {
+							if (canStartRecognition()) {
+								startRecognition()
+							}
+						}, 1000)
+					}
 				}
 			}, Math.max(text.length * 100, 3000)) // Timeout based on text length, min 3 seconds
 
@@ -1333,7 +1720,6 @@ export default function Home() {
 			}
 
 		} catch (error) {
-			console.error('Error creating/starting speech:', error)
 			// Disable speech on critical errors
 			setSpeechPermissionGranted(false)
 			setIsSpeaking(false)
@@ -1343,12 +1729,17 @@ export default function Home() {
 				
 				// Launch pending game even on critical speech errors
 				if (pendingGame) {
-					console.log('🎮 Launching game after critical speech error:', pendingGame.game)
 					launchGame(pendingGame.game, pendingGame.aiMode)
 					setPendingGameLaunch(null)
 				}
 				
-				if (!isProcessing) scheduleStartRecognition(400)
+				if (!isProcessing) {
+					setTimeout(() => {
+						if (canStartRecognition()) {
+							startRecognition()
+						}
+					}, 1000)
+				}
 			}, 3000)
 		}
 	}
@@ -1386,13 +1777,16 @@ export default function Home() {
 							<Mouth />
 						</g>
 					</svg>
-					{(transcript || aiResponse) && (
-						<div className="subtitle">{aiResponse || transcript}</div>
+					{(aiResponse || transcript) && (
+						<div className="subtitle">{aiResponse ? aiResponse : transcript}</div>
 					)}
 					{isProcessing && (
 						<div className="processing"><div className="thinking-dots"><span>.</span><span>.</span><span>.</span></div>AI is thinking...</div>
 					)}
-					<div className="mic-status">{isSpeaking ? 'Speaking…' : (isProcessing ? 'Listening paused' : (isListening ? 'Listening…' : 'Microphone Idle'))}</div>
+					<div className="mic-status">
+						{isSpeaking ? 'Speaking…' : (isProcessing ? 'Listening paused' : (isListening ? 'Listening…' : 'Microphone Idle'))}
+					</div>
+
 				</div>
 			</main>
 			{showTicTacToe && <TicTacToe onClose={() => {
