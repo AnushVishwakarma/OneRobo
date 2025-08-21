@@ -753,6 +753,17 @@ function Sudoku({ onClose }: { onClose: () => void }) {
 
 export default function Home() {
 	const [isSpeaking, setIsSpeaking] = useState(false)
+	const [stars, setStars] = useState<{cx: number, cy: number, r: number, opacity: number}[]>([]);
+
+	useEffect(() => {
+	  const generatedStars = Array.from({ length: 150 }).map(() => ({
+	    cx: Math.random() * 1200,
+	    cy: Math.random() * 700,
+	    r: Math.random() * 2 + 0.5,
+	    opacity: Math.random() * 0.5 + 0.2,
+	  }));
+	  setStars(generatedStars);
+	}, []);
 	const [transcript, setTranscript] = useState('')
 	const [mouthAnimation, setMouthAnimation] = useState(0)
 	const [isProcessing, setIsProcessing] = useState(false)
@@ -1509,20 +1520,12 @@ export default function Home() {
 		}
 		
 		
-		// Priority 1: English "child" or "kid" voice
+		// Priority 1: Google English (US) female voice
 		let preferredVoice = voices.find(voice => 
-			voice.lang.startsWith('en') &&
-			(voice.name.toLowerCase().includes('child') || voice.name.toLowerCase().includes('kid'))
+			voice.name.toLowerCase().includes('google') && 
+			voice.lang.startsWith('en-US') && 
+			voice.name.toLowerCase().includes('female')
 		)
-
-		// Priority 2: Google English (US) female voice
-		if (!preferredVoice) {
-			preferredVoice = voices.find(voice => 
-				voice.name.toLowerCase().includes('google') && 
-				voice.lang.startsWith('en-US') && 
-				voice.name.toLowerCase().includes('female')
-			)
-		}
 		
 		// Priority 2: Any Google English (US) voice
 		if (!preferredVoice) {
@@ -1573,8 +1576,8 @@ export default function Home() {
 	const startSpeech = (text: string, synth: SpeechSynthesis, pendingGame?: { game: 'tictactoe' | 'trivia' | 'sudoku', aiMode: boolean } | null, emergencyTimer?: NodeJS.Timeout | null) => {
 		try {
 			const utter = new SpeechSynthesisUtterance(text)
-			utter.rate = 1
-			utter.pitch = 1.6
+			utter.rate = 1.0
+			utter.pitch = 1.3
 			utter.volume = 1
 
 			// Set up event handlers
@@ -1768,13 +1771,52 @@ export default function Home() {
 			<main className="container">
 				<div className="interface">
 					<svg className="face" viewBox="0 0 1200 700" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg">
-						<rect width="1200" height="700" fill="black" />
-						<g stroke="#08AFC0" strokeWidth="70" strokeLinecap="round" strokeLinejoin="round" fill="none">
-							<g transform="translate(0,120)">
-								<path d="M180 180 L360 120 L180 60" />
-								<path d="M1020 180 L840 120 L1020 60" />
+						<defs>
+							<radialGradient id="galaxy-bg" cx="50%" cy="50%" r="50%">
+								<stop offset="0%" stopColor="#2c003e" />
+								<stop offset="100%" stopColor="#000000" />
+							</radialGradient>
+							<radialGradient id="eye-gradient" cx="50%" cy="50%" r="50%" fx="50%" fy="50%">
+								<stop offset="0%" style={{ stopColor: 'rgb(0, 255, 127)', stopOpacity: 1 }} />
+								<stop offset="100%" style={{ stopColor: 'rgb(0, 128, 0)', stopOpacity: 1 }} />
+							</radialGradient>
+							<filter id="blush-blur">
+								<feGaussianBlur in="SourceGraphic" stdDeviation="10" />
+							</filter>
+						</defs>
+						<rect width="1200" height="700" fill="url(#galaxy-bg)" />
+						{stars.map((star, i) => (
+							<circle key={i} cx={star.cx} cy={star.cy} r={star.r} fill="white" opacity={star.opacity} />
+						))}
+						<g>
+
+							{/* Cheeks */}
+							<ellipse cx="380" cy="450" rx="60" ry="25" fill="rgba(255, 105, 180, 0.4)" filter="url(#blush-blur)" />
+							<ellipse cx="820" cy="450" rx="60" ry="25" fill="rgba(255, 105, 180, 0.4)" filter="url(#blush-blur)" />
+
+							{/* Eyes */}
+							<g className="blinking-eyes">
+								<circle cx="400" cy="350" r="80" fill="url(#eye-gradient)" />
+								<circle cx="400" cy="350" r="40" fill="#000" />
+								<circle cx="420" cy="320" r="18" fill="#fff" />
+								<circle cx="380" cy="380" r="9" fill="#fff" opacity="0.7" />
 							</g>
-							<Mouth />
+							<g className="blinking-eyes">
+								<circle cx="800" cy="350" r="80" fill="url(#eye-gradient)" />
+								<circle cx="800" cy="350" r="40" fill="#000" />
+								<circle cx="820" cy="320" r="18" fill="#fff" />
+								<circle cx="780" cy="380" r="9" fill="#fff" opacity="0.7" />
+							</g>
+
+							{/* Mouth */}
+							<path
+								className={isSpeaking ? 'speaking-mouth' : ''}
+								d="M520 550 Q600 600 680 550"
+								stroke="#08AFC0"
+								strokeWidth="8"
+								fill="none"
+								strokeLinecap="round"
+							/>
 						</g>
 					</svg>
 					{(aiResponse || transcript) && (

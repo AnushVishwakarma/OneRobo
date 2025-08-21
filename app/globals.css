@@ -83,3 +83,26 @@ body { margin: 0; background: #000; color: #ededed; font-family: Inter, system-u
 .header-actions { position: fixed; top: 12px; right: 12px; display: flex; gap: 8px; }
 @media (max-width: 768px) { .face { width: 90vw; height: 60vh; } .subtitle { font-size: 1.2rem; max-width: 90vw; } }
 
+/* -- Animations for the face -- */
+
+/* Blinking animation for the eyes */
+@keyframes blink {
+  0%, 90%, 100% { transform: scaleY(1); }
+  95% { transform: scaleY(0.1); }
+}
+
+.blinking-eyes {
+  animation: blink 4s infinite;
+  transform-origin: center;
+}
+
+/* Speaking animation for the mouth */
+@keyframes speak {
+  0%, 100% { d: path('M520 550 Q600 600 680 550'); }
+  50% { d: path('M510 555 Q600 620 690 555'); }
+}
+
+.speaking-mouth {
+  animation: speak 0.7s infinite;
+}
+
